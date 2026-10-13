@@ -1,0 +1,39 @@
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: kodex
+      MYSQL_USER: kodex
+      MYSQL_PASSWORD: kodex
+    ports:
+      - "3307:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      # Crea también la BD de pruebas (kodex_test) la primera vez
+      - ./database/docker-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: kodex
+      DB_USER: kodex
+      DB_PASS: kodex
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-0123456789abcdef}
+      JWT_TTL: 28800
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:8000,http://127.0.0.1:8000}
+    ports:
+      - "8080:80"
+
+volumes:
+  db_data:

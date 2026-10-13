@@ -1,0 +1,34 @@
+{
+    "name": "kodex/incidencias-api",
+    "description": "API REST de gestión de incidencias - Reto Kodex, Equipo 1",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.3",
+        "ext-pdo": "*",
+        "ext-json": "*",
+        "firebase/php-jwt": "^6.10"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kodex\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kodex\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "serve": "php -S 0.0.0.0:8080 -t public public/index.php",
+        "migrate": "php bin/migrate.php",
+        "seed": "php bin/seed.php",
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

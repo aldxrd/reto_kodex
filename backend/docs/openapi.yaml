@@ -1,0 +1,749 @@
+openapi: 3.0.3
+info:
+  title: Kodex Incidencias API
+  version: 0.1.0
+  description: |
+    API REST de la plataforma de gestión de incidencias (Reto Kodex - Equipo 1).
+
+    **Convenciones**
+    - Todo es JSON (`Content-Type: application/json`). Fechas en UTC, formato `YYYY-MM-DD HH:MM:SS`.
+    - Respuesta exitosa: `{ "data": ..., "meta": ... }` (meta solo en listados paginados).
+    - Error: `{ "error": { "code": "...", "message": "...", "details": {...} } }`.
+      `message` está en español y se puede mostrar al usuario; `code` es estable para la lógica del front.
+    - Autenticación: `Authorization: Bearer <token>` en todas las rutas salvo `/health` y `/auth/login`.
+    - Los permisos se validan SIEMPRE en el servidor; el front solo oculta lo que el rol no puede hacer.
+
+    **Estado de implementación**: `x-status: implemented` (día 1) o `x-status: planned` (días 2–3).
+    Las rutas planned ya tienen el contrato acordado para que el front pueda avanzar.
+
+    **Matriz de permisos**
+
+    | Acción                              | admin | agent                     | requester           |
+    |-------------------------------------|:-----:|:-------------------------:|:-------------------:|
+    | Crear incidencia                    |  ✔    | ✔                         | ✔                   |
+    | Ver incidencias                     | todas | todas                     | solo las suyas      |
+    | Editar título/descripción           |  ✔    | ✔                         | suyas y en `open`   |
+    | Cambiar prioridad/categoría         |  ✔    | ✔                         | ✘                   |
+    | Asignar responsable                 |  ✔    | solo a sí mismo           | ✘                   |
+    | Cambiar estado                      |  ✔    | asignadas a él            | cancelar suyas en `open`; cerrar suyas en `resolved` |
+    | Comentar                            |  ✔    | ✔                         | suyas               |
+    | Dashboard                           | global| global                    | solo sus datos      |
+    | Usuarios y auditoría global         |  ✔    | ✘                         | ✘                   |
+servers:
+  - url: http://localhost:8080/api
+    description: Local (php -S o Docker)
+
+tags:
+  - name: Sistema
+  - name: Auth
+  - name: Catálogos
+  - name: Usuarios
+  - name: Incidencias
+  - name: Dashboard
+  - name: Auditoría
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Sistema]
+      summary: Estado del servicio y de la base de datos
+      security: []
+      x-status: implemented
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status: { type: string, example: ok }
+                      time: { type: string, format: date-time }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Iniciar sesión
+      description: |
+        Tras `LOGIN_MAX_ATTEMPTS` intentos fallidos (5 por defecto) la cuenta se bloquea
+        `LOGIN_LOCK_MINUTES` minutos (429). Correo inexistente y contraseña incorrecta devuelven
+        el mismo error para no revelar qué correos existen.
+      security: []
+      x-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: admin@kodex.pe }
+                password: { type: string, example: Admin123! }
+      responses:
+        '200':
+          description: Sesión iniciada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      token: { type: string }
+                      token_type: { type: string, example: Bearer }
+                      expires_in: { type: integer, description: segundos, example: 28800 }
+                      user: { $ref: '#/components/schemas/AuthUser' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429':
+          description: Cuenta bloqueada temporalmente (`ACCOUNT_LOCKED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Usuario de la sesión actual
+      description: Úsalo al cargar el front para validar el token guardado y conocer el rol.
+      x-status: implemented
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AuthUser' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Cerrar sesión (revoca el token actual)
+      x-status: implemented
+      responses:
+        '204': { description: Sesión cerrada }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /catalogs:
+    get:
+      tags: [Catálogos]
+      summary: Categorías, prioridades, estados (con transiciones), roles y SLA
+      x-status: implemented
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      categories:
+                        type: array
+                        items: { $ref: '#/components/schemas/Category' }
+                      priorities:
+                        type: array
+                        items: { $ref: '#/components/schemas/Option' }
+                      statuses:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: '#/components/schemas/Option'
+                            - type: object
+                              properties:
+                                transitions:
+                                  type: array
+                                  items: { $ref: '#/components/schemas/IncidentStatus' }
+                      roles:
+                        type: array
+                        items: { $ref: '#/components/schemas/Option' }
+                      sla:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            priority: { $ref: '#/components/schemas/Priority' }
+                            response_hours: { type: integer }
+                            resolution_hours: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /users:
+    get:
+      tags: [Usuarios]
+      summary: Listar usuarios (admin)
+      x-status: implemented
+      parameters:
+        - in: query
+          name: role
+          schema: { $ref: '#/components/schemas/Role' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Usuarios]
+      summary: Crear usuario (admin)
+      x-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, role]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 120 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 72 }
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /users/{id}:
+    patch:
+      tags: [Usuarios]
+      summary: Cambiar rol o activar/desactivar (admin)
+      x-status: planned
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                role: { $ref: '#/components/schemas/Role' }
+                is_active: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /users/agents:
+    get:
+      tags: [Usuarios]
+      summary: Agentes y admins activos (para el select "Responsable")
+      x-status: implemented
+      description: Disponible para admin y agent.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UserRef' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /incidents:
+    get:
+      tags: [Incidencias]
+      summary: Buscar incidencias (filtros combinados, paginación y orden)
+      description: Un solicitante solo recibe sus propias incidencias, sin importar los filtros que envíe.
+      x-status: planned
+      parameters:
+        - { in: query, name: q, schema: { type: string }, description: 'Busca en código, título y descripción' }
+        - in: query
+          name: status
+          description: Uno o varios separados por coma (`open,in_progress`)
+          schema: { type: string, example: 'open,in_progress' }
+        - in: query
+          name: priority
+          description: Uno o varios separados por coma
+          schema: { type: string, example: 'high,critical' }
+        - { in: query, name: category_id, schema: { type: integer } }
+        - in: query
+          name: assignee_id
+          description: Id del responsable, `me` para las mías, `none` para sin asignar
+          schema: { type: string, example: me }
+        - { in: query, name: requester_id, schema: { type: integer } }
+        - { in: query, name: overdue, schema: { type: boolean }, description: Solo vencidas }
+        - { in: query, name: created_from, schema: { type: string, format: date } }
+        - { in: query, name: created_to, schema: { type: string, format: date } }
+        - { in: query, name: page, schema: { type: integer, default: 1, minimum: 1 } }
+        - { in: query, name: per_page, schema: { type: integer, default: 10, minimum: 1, maximum: 100 } }
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [created_at, updated_at, due_at, priority, status, title, code]
+            default: created_at
+        - in: query
+          name: order
+          schema: { type: string, enum: [asc, desc], default: desc }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Incident' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Incidencias]
+      summary: Crear incidencia
+      description: |
+        Se crea en estado `open`, con `requester` = usuario actual y `due_at` según el SLA de la prioridad.
+        Un solicitante no puede enviar `assignee_id` ni `priority` (403 si los envía; la prioridad queda en `medium`).
+      x-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, description, category_id]
+              properties:
+                title: { type: string, minLength: 5, maxLength: 150 }
+                description: { type: string, minLength: 10, maxLength: 5000 }
+                category_id: { type: integer }
+                priority: { $ref: '#/components/schemas/Priority' }
+                assignee_id: { type: integer, nullable: true, description: Solo admin/agent }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Incident' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /incidents/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Incidencias]
+      summary: Detalle de una incidencia
+      description: Un solicitante recibe 404 si la incidencia no es suya (no se revela que existe).
+      x-status: planned
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Incident'
+                      - type: object
+                        properties:
+                          allowed_transitions:
+                            type: array
+                            description: Estados a los que ESTE usuario puede llevarla ahora
+                            items: { $ref: '#/components/schemas/IncidentStatus' }
+                          can_edit: { type: boolean }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Incidencias]
+      summary: Actualizar datos (no el estado)
+      description: Solo se envían los campos a cambiar. Cada cambio queda en auditoría.
+      x-status: planned
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                category_id: { type: integer }
+                priority: { $ref: '#/components/schemas/Priority' }
+                assignee_id: { type: integer, nullable: true }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Incident' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: La incidencia está cerrada o cancelada (`INCIDENT_LOCKED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /incidents/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Incidencias]
+      summary: Cambiar estado (valida la transición)
+      description: |
+        Transiciones válidas: ver `GET /catalogs` → `statuses[].transitions`.
+        `comment` es obligatorio al pasar a `resolved`, `on_hold` o `cancelled`.
+      x-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/IncidentStatus' }
+                comment: { type: string, maxLength: 2000 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Incident' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Transición no permitida (`INVALID_TRANSITION`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /incidents/{id}/comments:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Incidencias]
+      summary: Comentarios de la incidencia
+      x-status: planned
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Comment' }
+    post:
+      tags: [Incidencias]
+      summary: Agregar comentario
+      x-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, minLength: 1, maxLength: 2000 }
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Comment' }
+
+  /incidents/{id}/history:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Auditoría]
+      summary: Historial de cambios de una incidencia (quién cambió qué y cuándo)
+      x-status: planned
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEntry' }
+
+  /audit:
+    get:
+      tags: [Auditoría]
+      summary: Auditoría global (admin)
+      x-status: planned
+      parameters:
+        - { in: query, name: entity_type, schema: { type: string, enum: [incident, user, auth] } }
+        - { in: query, name: entity_id, schema: { type: integer } }
+        - { in: query, name: user_id, schema: { type: integer } }
+        - { in: query, name: action, schema: { type: string } }
+        - { in: query, name: from, schema: { type: string, format: date } }
+        - { in: query, name: to, schema: { type: string, format: date } }
+        - { in: query, name: page, schema: { type: integer, default: 1 } }
+        - { in: query, name: per_page, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEntry' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /dashboard/summary:
+    get:
+      tags: [Dashboard]
+      summary: Indicadores (abiertas, resueltas, vencidas, tiempos de atención)
+      description: |
+        Admin y agente ven datos globales; el solicitante solo los de sus incidencias.
+        - `open` = open + in_progress + on_hold
+        - `resolved` = resolved + closed
+        - `overdue` = activas con `due_at` < ahora
+        - tiempos en horas: respuesta = `first_response_at - created_at`, resolución = `resolved_at - created_at`
+      x-status: planned
+      parameters:
+        - { in: query, name: from, schema: { type: string, format: date } }
+        - { in: query, name: to, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      totals:
+                        type: object
+                        properties:
+                          total: { type: integer }
+                          open: { type: integer }
+                          resolved: { type: integer }
+                          overdue: { type: integer }
+                          cancelled: { type: integer }
+                      avg_response_hours: { type: number, nullable: true }
+                      avg_resolution_hours: { type: number, nullable: true }
+                      sla_compliance_pct: { type: number, nullable: true }
+                      by_status:
+                        type: array
+                        items: { type: object, properties: { status: { type: string }, count: { type: integer } } }
+                      by_priority:
+                        type: array
+                        items: { type: object, properties: { priority: { type: string }, count: { type: integer } } }
+                      by_category:
+                        type: array
+                        items: { type: object, properties: { category: { type: string }, count: { type: integer } } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      in: path
+      name: id
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  schemas:
+    Role:
+      type: string
+      enum: [admin, agent, requester]
+    Priority:
+      type: string
+      enum: [low, medium, high, critical]
+    IncidentStatus:
+      type: string
+      enum: [open, in_progress, on_hold, resolved, closed, cancelled]
+    Option:
+      type: object
+      properties:
+        value: { type: string }
+        label: { type: string }
+    AuthUser:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        role_label: { type: string, example: Administrador }
+    User:
+      allOf:
+        - $ref: '#/components/schemas/AuthUser'
+        - type: object
+          properties:
+            is_active: { type: boolean }
+            last_login_at: { type: string, nullable: true }
+            created_at: { type: string }
+    UserRef:
+      type: object
+      nullable: true
+      properties:
+        id: { type: integer }
+        name: { type: string }
+    Category:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string, nullable: true }
+    Incident:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: INC-000042 }
+        title: { type: string }
+        description: { type: string }
+        category: { $ref: '#/components/schemas/Category' }
+        priority: { $ref: '#/components/schemas/Priority' }
+        priority_label: { type: string }
+        status: { $ref: '#/components/schemas/IncidentStatus' }
+        status_label: { type: string }
+        requester: { $ref: '#/components/schemas/UserRef' }
+        assignee: { $ref: '#/components/schemas/UserRef' }
+        due_at: { type: string, nullable: true }
+        is_overdue: { type: boolean }
+        first_response_at: { type: string, nullable: true }
+        resolved_at: { type: string, nullable: true }
+        closed_at: { type: string, nullable: true }
+        created_at: { type: string }
+        updated_at: { type: string }
+    Comment:
+      type: object
+      properties:
+        id: { type: integer }
+        body: { type: string }
+        author: { $ref: '#/components/schemas/UserRef' }
+        created_at: { type: string }
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        entity_type: { type: string }
+        entity_id: { type: integer, nullable: true }
+        action: { type: string, example: status_changed }
+        changes:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: object
+            properties:
+              old: {}
+              new: {}
+          example: { status: { old: open, new: in_progress } }
+        user: { $ref: '#/components/schemas/UserRef' }
+        created_at: { type: string }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object }
+
+  responses:
+    Unauthenticated:
+      description: Sin token, token inválido/expirado/revocado (`UNAUTHENTICATED`, `TOKEN_INVALID`, `TOKEN_EXPIRED`, `TOKEN_REVOKED`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InvalidCredentials:
+      description: Correo o contraseña incorrectos (`INVALID_CREDENTIALS`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: El rol no tiene permiso (`FORBIDDEN`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No existe o no es visible para el usuario (`NOT_FOUND`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Datos inválidos (`VALIDATION_ERROR`); `details.fields` tiene un mensaje por campo
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Los datos enviados no son válidos.
+              details:
+                fields:
+                  email: Debe ser un correo electrónico válido.
