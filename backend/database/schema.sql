@@ -29,6 +29,7 @@ CREATE TABLE users (
     email            VARCHAR(160)  NOT NULL,
     password_hash    VARCHAR(255)  NOT NULL,
     role             VARCHAR(20)   NOT NULL,
+    area             VARCHAR(80)   NULL COMMENT 'Área de la empresa: TI, Soporte, Finanzas...',
     is_active        TINYINT(1)    NOT NULL DEFAULT 1,
     failed_logins    SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     locked_until     DATETIME      NULL,
@@ -38,6 +39,7 @@ CREATE TABLE users (
     PRIMARY KEY (id),
     UNIQUE KEY uq_users_email (email),
     KEY idx_users_role (role),
+    KEY idx_users_area (area),
     CONSTRAINT chk_users_role CHECK (role IN ('admin', 'agent', 'requester'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -55,12 +57,15 @@ CREATE TABLE revoked_tokens (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
--- Categorías de incidencia (Hardware, Software, Red, Accesos, ...)
+-- Categorías de incidencia. Regla: una categoría con incidencias activas
+-- no se elimina, se desactiva (is_active = 0) para que no aparezca en nuevas.
+-- La FK desde incidents (sin ON DELETE) impide borrarla a nivel de BD.
 -- ---------------------------------------------------------------------
 CREATE TABLE categories (
     id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
     name         VARCHAR(80)  NOT NULL,
     description  VARCHAR(255) NULL,
+    area         VARCHAR(80)  NULL COMMENT 'Área responsable de atenderlas',
     is_active    TINYINT(1)   NOT NULL DEFAULT 1,
     created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -69,7 +74,9 @@ CREATE TABLE categories (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
--- Política de SLA por prioridad. Define cuándo vence una incidencia.
+-- Tiempo objetivo (SLA) por prioridad. Editable por el admin.
+--   resolution_hours : creación → resolución. Define due_at y las "vencidas".
+--   response_hours   : creación → inicio de atención (referencial).
 -- ---------------------------------------------------------------------
 CREATE TABLE sla_policies (
     priority          VARCHAR(10)       NOT NULL,
@@ -82,10 +89,13 @@ CREATE TABLE sla_policies (
 -- ---------------------------------------------------------------------
 -- Incidencias
 --   due_at            : fecha límite de resolución (created_at + SLA)
+--   code              : INC-0001 (se genera a partir del id)
+--   assigned_at       : cuándo se asignó responsable (pasa a 'assigned')
 --   first_response_at : primera vez que pasa a in_progress (tiempo de respuesta)
---   resolved_at       : cuándo pasó a resolved (tiempo de atención)
--- Una incidencia está "vencida" si no está resuelta/cerrada/cancelada y now() > due_at,
--- o si se resolvió después de due_at.
+--   resolved_at       : cuándo pasó a resolved (tiempo de atención = resolved_at - created_at)
+-- Una incidencia está "vencida" si sigue activa (open/assigned/in_progress) y now() > due_at.
+-- Flujo: open → assigned → in_progress → resolved → closed (reabrir: resolved → in_progress);
+--        open → cancelled (solo el solicitante).
 -- ---------------------------------------------------------------------
 CREATE TABLE incidents (
     id                 INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -98,6 +108,7 @@ CREATE TABLE incidents (
     requester_id       INT UNSIGNED NOT NULL,
     assignee_id        INT UNSIGNED NULL,
     due_at             DATETIME     NULL,
+    assigned_at        DATETIME     NULL,
     first_response_at  DATETIME     NULL,
     resolved_at        DATETIME     NULL,
     closed_at          DATETIME     NULL,
@@ -116,7 +127,7 @@ CREATE TABLE incidents (
     CONSTRAINT fk_incidents_requester FOREIGN KEY (requester_id) REFERENCES users (id),
     CONSTRAINT fk_incidents_assignee  FOREIGN KEY (assignee_id)  REFERENCES users (id) ON DELETE SET NULL,
     CONSTRAINT chk_incidents_priority CHECK (priority IN ('low', 'medium', 'high', 'critical')),
-    CONSTRAINT chk_incidents_status   CHECK (status IN ('open', 'in_progress', 'on_hold', 'resolved', 'closed', 'cancelled'))
+    CONSTRAINT chk_incidents_status   CHECK (status IN ('open', 'assigned', 'in_progress', 'resolved', 'closed', 'cancelled'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
@@ -136,7 +147,8 @@ CREATE TABLE incident_comments (
 
 -- ---------------------------------------------------------------------
 -- Auditoría: quién cambió qué y cuándo.
---   changes guarda {"campo": {"old": x, "new": y}, ...}
+--   action  : created | updated | assigned | status_changed | commented | login | ...
+--   changes : {"campo": {"old": x, "new": y}, ...}
 -- Solo se inserta; nunca se actualiza ni borra desde la API.
 -- ---------------------------------------------------------------------
 CREATE TABLE audit_logs (
@@ -159,14 +171,15 @@ CREATE TABLE audit_logs (
 -- Datos de catálogo (no son datos de prueba: el sistema los necesita)
 -- ---------------------------------------------------------------------
 INSERT INTO sla_policies (priority, response_hours, resolution_hours) VALUES
-    ('critical', 1, 4),
-    ('high',     4, 24),
-    ('medium',   8, 72),
-    ('low',     24, 120);
+    ('critical', 1,  2),
+    ('high',     2,  6),
+    ('medium',   4, 12),
+    ('low',      8, 24);
 
-INSERT INTO categories (name, description) VALUES
-    ('Hardware', 'Equipos, periféricos e impresoras'),
-    ('Software', 'Aplicaciones, licencias y errores de sistema'),
-    ('Red',      'Conectividad, VPN, Wi-Fi'),
-    ('Accesos',  'Cuentas, contraseñas y permisos'),
-    ('Otros',    'Solicitudes que no encajan en otra categoría');
+INSERT INTO categories (name, description, area) VALUES
+    ('Infraestructura', 'Servidores, red y conectividad',      'Infraestructura'),
+    ('Software',        'Aplicaciones internas y correo',      'Soporte'),
+    ('Hardware',        'Equipos, periféricos e impresoras',   'Soporte'),
+    ('Accesos',         'Cuentas, permisos y VPN',             'Seguridad TI'),
+    ('Seguridad',       'Antivirus e incidentes de seguridad', 'Seguridad TI'),
+    ('Otros',           'Solicitudes no clasificadas',         'Soporte');

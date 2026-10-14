@@ -48,11 +48,12 @@ final class AuthorizationTest extends ApiTestCase
         $token = $this->login('admin@test.pe', 'Admin123!');
 
         $res = $this->call('POST', '/api/users', [
-            'name' => 'Nuevo Agente', 'email' => 'Nuevo@Test.pe', 'password' => 'Password1!', 'role' => 'agent',
+            'name' => 'Nuevo Agente', 'email' => 'Nuevo@Test.pe', 'password' => 'Password1!', 'role' => 'agent', 'area' => 'Soporte',
         ], $token);
 
         self::assertSame(201, $res->status);
         self::assertSame('nuevo@test.pe', $res->body['data']['email']);
+        self::assertSame('Soporte', $res->body['data']['area']);
         self::assertArrayNotHasKey('password_hash', $res->body['data']);
 
         $audit = $this->db->query("SELECT user_id, action FROM audit_logs WHERE entity_type = 'user'")->fetch();
@@ -93,11 +94,62 @@ final class AuthorizationTest extends ApiTestCase
         $res = $this->call('GET', '/api/catalogs', null, $token);
 
         self::assertSame(200, $res->status);
-        $statuses = array_column($res->body['data']['statuses'], 'transitions', 'value');
-        self::assertSame(['in_progress', 'cancelled'], $statuses['open']);
-        self::assertSame([], $statuses['closed']);
-        self::assertCount(5, $res->body['data']['categories']);
-        self::assertCount(4, $res->body['data']['sla']);
+        $data = $res->body['data'];
+        $statuses = array_column($data['statuses'], null, 'value');
+        self::assertSame(['open', 'assigned', 'in_progress', 'resolved', 'closed', 'cancelled'], array_keys($statuses));
+        self::assertSame(['assigned', 'cancelled'], $statuses['open']['transitions']);
+        self::assertSame([], $statuses['closed']['transitions']);
+        self::assertSame([['to' => 'in_progress', 'label' => 'Iniciar atención']], $statuses['assigned']['actions']);
+
+        // Categorías y SLA del Figma
+        self::assertSame(
+            ['Accesos', 'Hardware', 'Infraestructura', 'Otros', 'Seguridad', 'Software'],
+            array_column($data['categories'], 'name'),
+        );
+        self::assertSame('Infraestructura', array_column($data['categories'], 'area', 'name')['Infraestructura']);
+        self::assertSame(
+            ['critical' => 2, 'high' => 6, 'medium' => 12, 'low' => 24],
+            array_column($data['sla'], 'resolution_hours', 'priority'),
+        );
+    }
+
+    public function test_admin_ve_categorias_con_inactivas_y_conteo_de_activas(): void
+    {
+        $this->db->exec("UPDATE categories SET is_active = 0 WHERE name = 'Otros'");
+        $admin = $this->login('admin@test.pe', 'Admin123!');
+        $agent = $this->login('agente@test.pe', 'Agente123!');
+
+        $this->assertError($this->call('GET', '/api/categories', null, $agent), 403, 'FORBIDDEN');
+
+        $res = $this->call('GET', '/api/categories', null, $admin);
+        self::assertSame(200, $res->status);
+        $byName = array_column($res->body['data'], null, 'name');
+        self::assertFalse($byName['Otros']['is_active']);
+        self::assertSame(0, $byName['Software']['active_incidents']);
+
+        // La categoría inactiva no aparece en el catálogo para nuevas incidencias.
+        $catalog = $this->call('GET', '/api/catalogs', null, $agent)->body['data']['categories'];
+        self::assertNotContains('Otros', array_column($catalog, 'name'));
+    }
+
+    public function test_listado_de_usuarios_filtra_y_trae_conteos(): void
+    {
+        $token = $this->login('admin@test.pe', 'Admin123!');
+        $this->db->exec("UPDATE users SET area = 'Soporte' WHERE email = 'agente@test.pe'");
+        $this->db->exec("UPDATE users SET is_active = 0 WHERE email = 'usuario@test.pe'");
+
+        $all = $this->call('GET', '/api/users', null, $token);
+        self::assertSame(['total' => 3, 'admin' => 1, 'agent' => 1, 'requester' => 1], $all->body['meta']['counts']);
+        self::assertSame(['Soporte'], $all->body['meta']['areas']);
+        self::assertSame('USR-001', array_column($all->body['data'], 'code', 'email')['admin@test.pe']);
+
+        $soporte = $this->call('GET', '/api/users?area=Soporte', null, $token)->body['data'];
+        self::assertSame(['agente@test.pe'], array_column($soporte, 'email'));
+
+        $inactive = $this->call('GET', '/api/users?status=inactive', null, $token)->body['data'];
+        self::assertSame(['usuario@test.pe'], array_column($inactive, 'email'));
+
+        $this->assertError($this->call('GET', '/api/users?status=raro', null, $token), 422, 'VALIDATION_ERROR');
     }
 
     public function test_cors_solo_para_origenes_permitidos(): void

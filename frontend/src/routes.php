@@ -85,7 +85,8 @@ return static function (ApiClient $api, Auth $auth, array $config): array {
                 $transitions = [];
                 foreach ($statuses as $s) {
                     if ($s['value'] === $incident['status']) {
-                        $transitions = $s['transitions'];
+                        // [{to: 'in_progress', label: 'Iniciar atención'}, ...]
+                        $transitions = $s['actions'] ?? array_map(static fn ($to) => ['to' => $to, 'label' => status_meta($to)[0]], $s['transitions']);
                     }
                 }
 
@@ -99,7 +100,7 @@ return static function (ApiClient $api, Auth $auth, array $config): array {
         [
             'method' => 'GET', 'pattern' => '/asignadas', 'roles' => $staff,
             'handler' => static function () use ($page, $user): string {
-                $active = ['assigned', 'in_progress', 'on_hold', 'open'];
+                $active = ['assigned', 'in_progress'];
                 $incidents = array_values(array_filter(SampleData::incidents(), static fn ($i) => $i['assignee'] === $user['name'] && in_array($i['status'], $active, true)));
 
                 return $page('pages/assigned', 'Asignadas a mí', 'assigned', ['Incidencias', 'Asignadas a mí'], ['incidents' => $incidents]);
@@ -116,7 +117,20 @@ return static function (ApiClient $api, Auth $auth, array $config): array {
         [
             'method' => 'GET', 'pattern' => '/usuarios', 'roles' => ['admin'],
             'handler' => static function () use ($page, $api): string {
-                return $page('pages/users', 'Usuarios', 'users', ['Administración', 'Usuarios'], ['users' => $api->get('/users')]);
+                // Filtros del Figma: Rol, Estado y Área (los aplica la API).
+                $filters = [
+                    'role' => is_string($_GET['rol'] ?? null) ? $_GET['rol'] : '',
+                    'status' => is_string($_GET['estado'] ?? null) ? $_GET['estado'] : '',
+                    'area' => is_string($_GET['area'] ?? null) ? $_GET['area'] : '',
+                ];
+                $res = $api->request('GET', '/users?' . http_build_query(array_filter($filters, static fn ($v) => $v !== '')));
+
+                return $page('pages/users', 'Usuarios', 'users', ['Administración', 'Usuarios'], [
+                    'users' => $res['data'] ?? [],
+                    'counts' => $res['meta']['counts'] ?? [],
+                    'areas' => $res['meta']['areas'] ?? [],
+                    'filters' => $filters,
+                ]);
             },
         ],
         [
@@ -128,11 +142,9 @@ return static function (ApiClient $api, Auth $auth, array $config): array {
         [
             'method' => 'GET', 'pattern' => '/categorias', 'roles' => ['admin'],
             'handler' => static function () use ($page, $api): string {
-                $catalogs = $api->get('/catalogs');
-
                 return $page('pages/categories', 'Categorías', 'categories', ['Administración', 'Categorías'], [
-                    'categories' => $catalogs['categories'] ?? [],
-                    'sla' => $catalogs['sla'] ?? [],
+                    'categories' => $api->get('/categories') ?? [],
+                    'sla' => $api->get('/catalogs')['sla'] ?? [],
                 ]);
             },
         ],

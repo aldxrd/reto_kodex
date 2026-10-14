@@ -31,11 +31,13 @@ Por defecto usa `API_URL=http://localhost:8080/api`. Para cambiarla, copiar `.en
 
 Son los del seed del backend:
 
-| Rol | Correo | Contraseña | Entra a |
-|---|---|---|---|
-| Administrador | admin@kodex.pe | Admin123! | Dashboard (ve todo el menú) |
-| Agente | agente@kodex.pe | Agente123! | Dashboard (sin Administración) |
-| Solicitante | usuario@kodex.pe | Usuario123! | Mis incidencias |
+| Rol | Nombre | Correo | Contraseña | Entra a |
+|---|---|---|---|---|
+| Administrador | Lucía Ramos | admin@kodex.pe | Admin123! | Dashboard (ve todo el menú) |
+| Agente | Jorge Paredes | agente@kodex.pe | Agente123! | Dashboard (sin Administración) |
+| Solicitante | Carlos Medina | usuario@kodex.pe | Usuario123! | Mis incidencias |
+
+Los nombres coinciden con los datos de ejemplo, así "Asignadas a mí" y "Mis incidencias" muestran filas al entrar con esos usuarios.
 
 ## Arquitectura
 
@@ -76,8 +78,8 @@ frontend/
 | **Logout revoca el token en la API** | `POST /api/auth/logout`: el token deja de servir aunque alguien lo hubiera copiado. |
 | **Todo dato se imprime con `e()`** | `htmlspecialchars` para prevenir XSS. |
 | **Ocultar menú por rol = solo UX** | El frontend oculta lo que el rol no puede usar y responde 403, pero **la autorización real la hace la API**. |
-| **Estados con etiqueta y color centralizados** (`status_meta`) | Un solo lugar para cambiar textos/colores; incluye `assigned` y `on_hold` para no romperse mientras se alinea el contrato. |
-| **Transiciones de estado desde la API** | El detalle muestra los botones según `GET /api/catalogs` → `statuses[].transitions`, no reglas duplicadas en el front. |
+| **Estados con etiqueta y color centralizados** (`status_meta`) | Un solo lugar para cambiar textos/colores; usa los mismos estados que `GET /api/catalogs` y el Figma (incluye `assigned` y `cancelled`). |
+| **Transiciones de estado desde la API** | El detalle muestra los botones según `GET /api/catalogs` → `statuses[].actions`, no reglas duplicadas en el front. |
 
 ## Qué es real y qué es de ejemplo (día 1)
 
@@ -86,10 +88,10 @@ Cada pantalla indica su origen con un aviso visible.
 | Pantalla | Datos | Endpoint |
 |---|---|---|
 | Login / logout | **Reales** | `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout` |
-| Usuarios | **Reales** | `GET /api/users` |
-| Categorías y SLA | **Reales** | `GET /api/catalogs` |
+| Usuarios (con filtros Rol/Estado/Área) | **Reales** | `GET /api/users` |
+| Categorías (área, activas, estado) y SLA | **Reales** | `GET /api/categories`, `GET /api/catalogs` |
 | Nueva incidencia (selects) | **Reales** | `GET /api/catalogs`, `GET /api/users/agents` (envío: día 2) |
-| Detalle (botones de transición) | **Reales** | `GET /api/catalogs` |
+| Detalle (botones de acción: "Iniciar atención", "Resolver", "Reabrir"…) | **Reales** | `GET /api/catalogs` → `statuses[].actions` |
 | Dashboard, Incidencias, Detalle, Asignadas, Mis incidencias, Auditoría | Ejemplo | `/api/incidents`, `/api/dashboard/summary`, `/api/audit` (días 2–3) |
 
 Los datos de ejemplo viven solo en `src/SampleData.php` y **se eliminan** a medida que el backend publica cada endpoint.

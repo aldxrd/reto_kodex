@@ -36,11 +36,11 @@ composer serve              # http://localhost:8080
 
 ## Usuarios de demostración
 
-| Rol | Correo | Contraseña |
-|---|---|---|
-| Administrador | admin@kodex.pe | Admin123! |
-| Agente | agente@kodex.pe / agente2@kodex.pe | Agente123! |
-| Solicitante | usuario@kodex.pe / usuario2@kodex.pe | Usuario123! |
+| Rol | Nombre (igual que el Figma) | Correo | Contraseña |
+|---|---|---|---|
+| Administrador | Lucía Ramos | admin@kodex.pe | Admin123! |
+| Agente | Jorge Paredes · María Vega · Kevin Castro | agente@kodex.pe · agente2@kodex.pe · agente3@kodex.pe | Agente123! |
+| Solicitante | Carlos Medina · Ana Torres | usuario@kodex.pe · usuario2@kodex.pe | Usuario123! |
 
 ## Pruebas
 
@@ -51,7 +51,7 @@ composer test                                  # local
 docker compose exec api composer test          # Docker
 ```
 
-Cubren: login, credenciales inválidas, validación, JSON mal formado, bloqueo por intentos, cuenta desactivada, token manipulado / con otro secreto / expirado / revocado, permisos por rol en el servidor, auditoría de login y creación de usuarios, CORS y la máquina de estados de incidencias.
+Cubren: login, credenciales inválidas, validación, JSON mal formado, bloqueo por intentos, cuenta desactivada, token manipulado / con otro secreto / expirado / revocado, permisos por rol en el servidor, auditoría de login y creación de usuarios, filtros y conteos de usuarios, categorías (inactivas, conteo de activas), catálogos/SLA del Figma, CORS y el flujo de estados de incidencias.
 
 ## Endpoints (día 1)
 
@@ -63,9 +63,10 @@ Cubren: login, credenciales inválidas, validación, JSON mal formado, bloqueo p
 | POST | `/api/auth/logout` | autenticado |
 | GET | `/api/catalogs` | autenticado |
 | GET | `/api/users/agents` | admin, agent |
-| GET / POST | `/api/users` | admin |
+| GET / POST | `/api/users` (filtros `role`, `status`, `area`) | admin |
+| GET | `/api/categories` (con inactivas y nº de activas) | admin |
 
-Incidencias, búsqueda, dashboard y auditoría ya están **definidos en el contrato** (`x-status: planned`) para que el frontend pueda integrarse desde el día 2.
+Incidencias, búsqueda, edición de usuarios/categorías/SLA, dashboard y auditoría ya están **definidos en el contrato** (`x-status: planned`), alineados pantalla por pantalla con el Figma, para que el frontend pueda integrarse desde el día 2.
 
 ## Para el frontend
 
@@ -103,7 +104,7 @@ backend/
 │   ├── Config.php     lectura de .env / variables de entorno
 │   ├── Http/          Request, Response, Router, Validator, HttpException
 │   ├── Auth/          TokenService (JWT), AuthService (login/logout), AuthUser
-│   ├── Domain/        Role, Priority, IncidentStatus (transiciones)
+│   ├── Domain/        Role, Priority, IncidentStatus (flujo de estados del Figma)
 │   ├── Controllers/   Auth, Catalog, User
 │   ├── Repositories/  acceso a datos con PDO y sentencias preparadas
 │   └── Database/      conexión PDO
