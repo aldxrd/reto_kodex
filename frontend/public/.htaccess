@@ -1,0 +1,5 @@
+# Apache (XAMPP): todas las rutas que no sean archivos reales van al front controller.
+Options -Indexes
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [QSA,L]
