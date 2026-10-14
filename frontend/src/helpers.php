@@ -118,8 +118,7 @@ function view(string $template, array $data = [], ?string $layout = 'layout'): s
 // ---------- Presentación de dominio ----------
 
 /**
- * Etiqueta y clase CSS por estado. Incluye todos los estados del backend y del Figma
- * (assigned / on_hold), para que el front no se rompa mientras se alinea el contrato.
+ * Etiqueta y clase CSS por estado (mismos estados que GET /api/catalogs y el Figma).
  *
  * @return array{0:string,1:string}
  */
@@ -129,7 +128,6 @@ function status_meta(string $status): array
         'open' => ['Abierta', 'status-open'],
         'assigned' => ['Asignada', 'status-assigned'],
         'in_progress' => ['En progreso', 'status-progress'],
-        'on_hold' => ['En espera', 'status-hold'],
         'resolved' => ['Resuelta', 'status-resolved'],
         'closed' => ['Cerrada', 'status-closed'],
         'cancelled' => ['Cancelada', 'status-cancelled'],

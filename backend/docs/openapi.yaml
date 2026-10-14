@@ -1,34 +1,50 @@
 openapi: 3.0.3
 info:
   title: Kodex Incidencias API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     API REST de la plataforma de gestión de incidencias (Reto Kodex - Equipo 1).
+    Contrato acordado con el diseño de Figma "Kodex Incidencias - Equipo 1".
 
     **Convenciones**
     - Todo es JSON (`Content-Type: application/json`). Fechas en UTC, formato `YYYY-MM-DD HH:MM:SS`.
-    - Respuesta exitosa: `{ "data": ..., "meta": ... }` (meta solo en listados paginados).
+    - Respuesta exitosa: `{ "data": ..., "meta": ... }` (meta en listados).
     - Error: `{ "error": { "code": "...", "message": "...", "details": {...} } }`.
       `message` está en español y se puede mostrar al usuario; `code` es estable para la lógica del front.
-    - Autenticación: `Authorization: Bearer <token>` en todas las rutas salvo `/health` y `/auth/login`.
+    - Autenticación: `Authorization: Bearer <token>` en todas las rutas salvo `/health`, `/openapi.yaml` y `/auth/login`.
     - Los permisos se validan SIEMPRE en el servidor; el front solo oculta lo que el rol no puede hacer.
+    - Códigos legibles: incidencias `INC-0001`, usuarios `USR-001`.
 
     **Estado de implementación**: `x-status: implemented` (día 1) o `x-status: planned` (días 2–3).
     Las rutas planned ya tienen el contrato acordado para que el front pueda avanzar.
 
+    **Flujo de estados** (validado en el backend, expuesto en `GET /catalogs`)
+
+    ```
+    open ──► assigned ──► in_progress ──► resolved ──► closed
+     │                        ▲              │
+     │                        └── reabrir ───┘
+     └──► cancelled   (solo el solicitante, mientras está Abierta)
+    ```
+
+    - Asignar responsable a una incidencia `open` la pasa automáticamente a `assigned`.
+    - Reasignar (cambiar responsable) no cambia el estado.
+
     **Matriz de permisos**
 
-    | Acción                              | admin | agent                     | requester           |
-    |-------------------------------------|:-----:|:-------------------------:|:-------------------:|
-    | Crear incidencia                    |  ✔    | ✔                         | ✔                   |
-    | Ver incidencias                     | todas | todas                     | solo las suyas      |
-    | Editar título/descripción           |  ✔    | ✔                         | suyas y en `open`   |
-    | Cambiar prioridad/categoría         |  ✔    | ✔                         | ✘                   |
-    | Asignar responsable                 |  ✔    | solo a sí mismo           | ✘                   |
-    | Cambiar estado                      |  ✔    | asignadas a él            | cancelar suyas en `open`; cerrar suyas en `resolved` |
-    | Comentar                            |  ✔    | ✔                         | suyas               |
-    | Dashboard                           | global| global                    | solo sus datos      |
-    | Usuarios y auditoría global         |  ✔    | ✘                         | ✘                   |
+    | Acción                         | admin           | agent                          | requester                          |
+    |--------------------------------|:---------------:|:------------------------------:|:----------------------------------:|
+    | Crear incidencia               | ✔               | ✔                              | ✔ (sin responsable)                |
+    | Ver incidencias                | todas           | todas                          | solo las suyas                     |
+    | Editar título/descripción      | ✔               | ✔                              | suyas y en `open`                  |
+    | Cambiar prioridad/categoría    | ✔               | ✔                              | ✘ (solo al crear)                  |
+    | Asignar / reasignar            | a cualquiera    | solo a sí mismo                | ✘                                  |
+    | Iniciar atención / Resolver    | ✔               | asignadas a él                 | ✘                                  |
+    | Cerrar / Reabrir (`resolved`)  | ✔               | asignadas a él                 | suyas                              |
+    | Cancelar (`open` → `cancelled`)| ✘               | ✘                              | suyas                              |
+    | Comentar                       | ✔               | ✔                              | suyas                              |
+    | Dashboard                      | global          | global                         | ✘                                  |
+    | Usuarios, categorías, SLA, auditoría global | ✔  | ✘                              | ✘                                  |
 servers:
   - url: http://localhost:8080/api
     description: Local (php -S o Docker)
@@ -38,6 +54,7 @@ tags:
   - name: Auth
   - name: Catálogos
   - name: Usuarios
+  - name: Categorías y SLA
   - name: Incidencias
   - name: Dashboard
   - name: Auditoría
@@ -66,10 +83,11 @@ paths:
                       status: { type: string, example: ok }
                       time: { type: string, format: date-time }
 
+  # ------------------------------------------------------------------ Auth
   /auth/login:
     post:
       tags: [Auth]
-      summary: Iniciar sesión
+      summary: Iniciar sesión (pantalla Login)
       description: |
         Tras `LOGIN_MAX_ATTEMPTS` intentos fallidos (5 por defecto) la cuenta se bloquea
         `LOGIN_LOCK_MINUTES` minutos (429). Correo inexistente y contraseña incorrecta devuelven
@@ -114,7 +132,7 @@ paths:
     get:
       tags: [Auth]
       summary: Usuario de la sesión actual
-      description: Úsalo al cargar el front para validar el token guardado y conocer el rol.
+      description: El front lo llama en cada página protegida para validar el token y conocer el rol vigente.
       x-status: implemented
       responses:
         '200':
@@ -136,10 +154,11 @@ paths:
         '204': { description: Sesión cerrada }
         '401': { $ref: '#/components/responses/Unauthenticated' }
 
+  # ------------------------------------------------------------- Catálogos
   /catalogs:
     get:
       tags: [Catálogos]
-      summary: Categorías, prioridades, estados (con transiciones), roles y SLA
+      summary: Categorías activas, prioridades, estados (con transiciones y acciones), roles y SLA
       x-status: implemented
       responses:
         '200':
@@ -165,31 +184,40 @@ paths:
                             - $ref: '#/components/schemas/Option'
                             - type: object
                               properties:
+                                is_active:
+                                  type: boolean
+                                  description: true para open/assigned/in_progress (cuentan como "abiertas")
                                 transitions:
                                   type: array
                                   items: { $ref: '#/components/schemas/IncidentStatus' }
+                                actions:
+                                  type: array
+                                  description: Texto del botón para cada transición
+                                  items: { $ref: '#/components/schemas/Action' }
                       roles:
                         type: array
                         items: { $ref: '#/components/schemas/Option' }
                       sla:
                         type: array
-                        items:
-                          type: object
-                          properties:
-                            priority: { $ref: '#/components/schemas/Priority' }
-                            response_hours: { type: integer }
-                            resolution_hours: { type: integer }
+                        items: { $ref: '#/components/schemas/SlaPolicy' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
 
+  # -------------------------------------------------------------- Usuarios
   /users:
     get:
       tags: [Usuarios]
-      summary: Listar usuarios (admin)
+      summary: Listar usuarios con filtros (pantalla Usuarios, admin)
       x-status: implemented
       parameters:
         - in: query
           name: role
           schema: { $ref: '#/components/schemas/Role' }
+        - in: query
+          name: status
+          schema: { type: string, enum: [active, inactive] }
+        - in: query
+          name: area
+          schema: { type: string, example: Soporte }
       responses:
         '200':
           description: OK
@@ -201,11 +229,27 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/User' }
+                  meta:
+                    type: object
+                    properties:
+                      counts:
+                        type: object
+                        description: '"24 usuarios · 3 administradores · 6 agentes · 15 solicitantes"'
+                        properties:
+                          total: { type: integer }
+                          admin: { type: integer }
+                          agent: { type: integer }
+                          requester: { type: integer }
+                      areas:
+                        type: array
+                        description: Opciones para el filtro "Área"
+                        items: { type: string }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Usuarios]
-      summary: Crear usuario (admin)
+      summary: Crear usuario (botón "Nuevo usuario", admin)
       x-status: implemented
       requestBody:
         required: true
@@ -219,6 +263,7 @@ paths:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 8, maxLength: 72 }
                 role: { $ref: '#/components/schemas/Role' }
+                area: { type: string, maxLength: 80, nullable: true }
       responses:
         '201':
           description: Creado
@@ -234,7 +279,8 @@ paths:
   /users/{id}:
     patch:
       tags: [Usuarios]
-      summary: Cambiar rol o activar/desactivar (admin)
+      summary: Editar usuario (botón "Editar", admin)
+      description: Cambiar rol, área, nombre o activar/desactivar. Queda en auditoría (ej. "Rol de usuario Solicitante → Agente").
       x-status: planned
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -246,6 +292,7 @@ paths:
               properties:
                 name: { type: string }
                 role: { $ref: '#/components/schemas/Role' }
+                area: { type: string, nullable: true }
                 is_active: { type: boolean }
       responses:
         '200':
@@ -258,12 +305,17 @@ paths:
                   data: { $ref: '#/components/schemas/User' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Un admin no puede desactivarse ni quitarse el rol a sí mismo (`SELF_LOCKOUT`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
   /users/agents:
     get:
       tags: [Usuarios]
-      summary: Agentes y admins activos (para el select "Responsable")
+      summary: Agentes y admins activos (select "Responsable")
       x-status: implemented
       description: Disponible para admin y agent.
       responses:
@@ -276,21 +328,147 @@ paths:
                 properties:
                   data:
                     type: array
-                    items: { $ref: '#/components/schemas/UserRef' }
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        role: { $ref: '#/components/schemas/Role' }
+                        area: { type: string, nullable: true }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  # ----------------------------------------------------- Categorías y SLA
+  /categories:
+    get:
+      tags: [Categorías y SLA]
+      summary: Todas las categorías con área, estado y nº de incidencias activas (pantalla Categorías, admin)
+      x-status: implemented
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CategoryAdmin' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Categorías y SLA]
+      summary: Crear categoría (botón "Nueva categoría", admin)
+      x-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 80 }
+                description: { type: string, maxLength: 255, nullable: true }
+                area: { type: string, maxLength: 80, nullable: true }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CategoryAdmin' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /categories/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      tags: [Categorías y SLA]
+      summary: Editar o activar/desactivar categoría (admin)
+      description: |
+        Regla de negocio: una categoría con incidencias activas no se elimina; se desactiva
+        (`is_active: false`) para que no aparezca en nuevas incidencias. No existe DELETE.
+      x-status: planned
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string, nullable: true }
+                area: { type: string, nullable: true }
+                is_active: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CategoryAdmin' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /sla:
+    patch:
+      tags: [Categorías y SLA]
+      summary: Editar tiempos objetivo por prioridad (botón "Editar tiempos", admin)
+      description: Solo afecta a incidencias creadas después del cambio (el `due_at` existente no se recalcula).
+      x-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [priority, resolution_hours]
+                properties:
+                  priority: { $ref: '#/components/schemas/Priority' }
+                  resolution_hours: { type: integer, minimum: 1, maximum: 720 }
+                  response_hours: { type: integer, minimum: 1, maximum: 720 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SlaPolicy' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  # ----------------------------------------------------------- Incidencias
   /incidents:
     get:
       tags: [Incidencias]
-      summary: Buscar incidencias (filtros combinados, paginación y orden)
-      description: Un solicitante solo recibe sus propias incidencias, sin importar los filtros que envíe.
+      summary: Buscar incidencias (pantallas Incidencias, Asignadas a mí y Mis incidencias)
+      description: |
+        Un solicitante solo recibe sus propias incidencias, sin importar los filtros que envíe.
+        - Incidencias → filtros libres.
+        - Asignadas a mí → `assignee_id=me&group=active|final`.
+        - Mis incidencias → `group=active|final` (el backend fuerza `requester_id` = usuario actual).
       x-status: planned
       parameters:
-        - { in: query, name: q, schema: { type: string }, description: 'Busca en código, título y descripción' }
+        - { in: query, name: q, schema: { type: string }, description: 'Busca en código y título' }
         - in: query
           name: status
           description: Uno o varios separados por coma (`open,in_progress`)
           schema: { type: string, example: 'open,in_progress' }
+        - in: query
+          name: group
+          description: 'Pestañas: active = open/assigned/in_progress · final = resolved/closed/cancelled'
+          schema: { type: string, enum: [active, final] }
         - in: query
           name: priority
           description: Uno o varios separados por coma
@@ -310,11 +488,11 @@ paths:
           name: sort
           schema:
             type: string
-            enum: [created_at, updated_at, due_at, priority, status, title, code]
-            default: created_at
+            enum: [due_at, created_at, updated_at, priority, status, title, code]
+            default: due_at
         - in: query
           name: order
-          schema: { type: string, enum: [asc, desc], default: desc }
+          schema: { type: string, enum: [asc, desc], default: asc }
       responses:
         '200':
           description: OK
@@ -325,16 +503,32 @@ paths:
                 properties:
                   data:
                     type: array
-                    items: { $ref: '#/components/schemas/Incident' }
-                  meta: { $ref: '#/components/schemas/PageMeta' }
+                    items: { $ref: '#/components/schemas/IncidentListItem' }
+                  meta:
+                    allOf:
+                      - $ref: '#/components/schemas/PageMeta'
+                      - type: object
+                        properties:
+                          summary:
+                            type: object
+                            description: |
+                              Conteos con los mismos filtros pero sin `status`/`group`/paginación.
+                              Alimenta "128 incidencias · 14 vencidas · 31 sin asignar" y las pestañas.
+                            properties:
+                              total: { type: integer }
+                              active: { type: integer }
+                              final: { type: integer }
+                              overdue: { type: integer }
+                              unassigned: { type: integer }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Incidencias]
-      summary: Crear incidencia
+      summary: Crear incidencia (pantalla Nueva incidencia)
       description: |
-        Se crea en estado `open`, con `requester` = usuario actual y `due_at` según el SLA de la prioridad.
-        Un solicitante no puede enviar `assignee_id` ni `priority` (403 si los envía; la prioridad queda en `medium`).
+        Se crea en `open`, con `requester` = usuario actual y `due_at` = ahora + SLA de la prioridad.
+        Si admin/agente envía `assignee_id`, queda directamente en `assigned`.
+        Un solicitante no puede enviar `assignee_id` (403).
       x-status: planned
       requestBody:
         required: true
@@ -342,11 +536,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [title, description, category_id]
+              required: [title, description, category_id, priority]
               properties:
-                title: { type: string, minLength: 5, maxLength: 150 }
-                description: { type: string, minLength: 10, maxLength: 5000 }
-                category_id: { type: integer }
+                title: { type: string, minLength: 10, maxLength: 150 }
+                description: { type: string, minLength: 10, maxLength: 1000 }
+                category_id: { type: integer, description: Debe ser una categoría activa }
                 priority: { $ref: '#/components/schemas/Priority' }
                 assignee_id: { type: integer, nullable: true, description: Solo admin/agent }
       responses:
@@ -366,7 +560,7 @@ paths:
       - $ref: '#/components/parameters/Id'
     get:
       tags: [Incidencias]
-      summary: Detalle de una incidencia
+      summary: Detalle de una incidencia (pantalla Detalle)
       description: Un solicitante recibe 404 si la incidencia no es suya (no se revela que existe).
       x-status: planned
       responses:
@@ -377,21 +571,12 @@ paths:
               schema:
                 type: object
                 properties:
-                  data:
-                    allOf:
-                      - $ref: '#/components/schemas/Incident'
-                      - type: object
-                        properties:
-                          allowed_transitions:
-                            type: array
-                            description: Estados a los que ESTE usuario puede llevarla ahora
-                            items: { $ref: '#/components/schemas/IncidentStatus' }
-                          can_edit: { type: boolean }
+                  data: { $ref: '#/components/schemas/Incident' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       tags: [Incidencias]
-      summary: Actualizar datos (no el estado)
-      description: Solo se envían los campos a cambiar. Cada cambio queda en auditoría.
+      summary: Editar datos o reasignar (no cambia el estado salvo open → assigned)
+      description: Solo se envían los campos a cambiar. Cada cambio queda en auditoría con valor anterior y nuevo.
       x-status: planned
       requestBody:
         content:
@@ -399,8 +584,8 @@ paths:
             schema:
               type: object
               properties:
-                title: { type: string }
-                description: { type: string }
+                title: { type: string, minLength: 10, maxLength: 150 }
+                description: { type: string, minLength: 10, maxLength: 1000 }
                 category_id: { type: integer }
                 priority: { $ref: '#/components/schemas/Priority' }
                 assignee_id: { type: integer, nullable: true }
@@ -425,12 +610,13 @@ paths:
   /incidents/{id}/status:
     parameters:
       - $ref: '#/components/parameters/Id'
-    post:
+    patch:
       tags: [Incidencias]
-      summary: Cambiar estado (valida la transición)
+      summary: Cambiar estado (botones "Iniciar atención", "Marcar como resuelta", "Cerrar", "Reabrir", "Cancelar")
       description: |
         Transiciones válidas: ver `GET /catalogs` → `statuses[].transitions`.
-        `comment` es obligatorio al pasar a `resolved`, `on_hold` o `cancelled`.
+        Además de que la transición exista, el usuario debe tener permiso (ver matriz).
+        `comment` es obligatorio al pasar a `resolved` o `cancelled` y se guarda como comentario.
       x-status: planned
       requestBody:
         required: true
@@ -441,7 +627,7 @@ paths:
               required: [status]
               properties:
                 status: { $ref: '#/components/schemas/IncidentStatus' }
-                comment: { type: string, maxLength: 2000 }
+                comment: { type: string, maxLength: 1000 }
       responses:
         '200':
           description: OK
@@ -454,7 +640,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Transición no permitida (`INVALID_TRANSITION`)
+          description: Transición no permitida desde el estado actual (`INVALID_TRANSITION`)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -480,7 +666,7 @@ paths:
                     items: { $ref: '#/components/schemas/Comment' }
     post:
       tags: [Incidencias]
-      summary: Agregar comentario
+      summary: Agregar comentario ("Visible para el solicitante y los agentes")
       x-status: planned
       requestBody:
         required: true
@@ -490,7 +676,7 @@ paths:
               type: object
               required: [body]
               properties:
-                body: { type: string, minLength: 1, maxLength: 2000 }
+                body: { type: string, minLength: 1, maxLength: 1000 }
       responses:
         '201':
           description: Creado
@@ -500,13 +686,18 @@ paths:
                 type: object
                 properties:
                   data: { $ref: '#/components/schemas/Comment' }
+        '409':
+          description: La incidencia está cerrada o cancelada (`INCIDENT_LOCKED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /incidents/{id}/history:
     parameters:
       - $ref: '#/components/parameters/Id'
     get:
       tags: [Auditoría]
-      summary: Historial de cambios de una incidencia (quién cambió qué y cuándo)
+      summary: Historial de la incidencia (bloque "Historial" del Detalle)
       x-status: planned
       responses:
         '200':
@@ -520,18 +711,27 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/AuditEntry' }
 
+  # ------------------------------------------------------------- Auditoría
   /audit:
     get:
       tags: [Auditoría]
-      summary: Auditoría global (admin)
+      summary: Auditoría global (pantalla Auditoría, admin, solo lectura)
       x-status: planned
       parameters:
-        - { in: query, name: entity_type, schema: { type: string, enum: [incident, user, auth] } }
-        - { in: query, name: entity_id, schema: { type: integer } }
-        - { in: query, name: user_id, schema: { type: integer } }
-        - { in: query, name: action, schema: { type: string } }
+        - in: query
+          name: period
+          description: 'Filtro "Fecha": 7d, 30d, 90d (o usar from/to)'
+          schema: { type: string, enum: ['7d', '30d', '90d'], default: '7d' }
         - { in: query, name: from, schema: { type: string, format: date } }
         - { in: query, name: to, schema: { type: string, format: date } }
+        - { in: query, name: user_id, schema: { type: integer } }
+        - in: query
+          name: action
+          schema: { $ref: '#/components/schemas/AuditAction' }
+        - in: query
+          name: entity_type
+          description: 'Filtro "Registro"'
+          schema: { type: string, enum: [incident, user, category, sla] }
         - { in: query, name: page, schema: { type: integer, default: 1 } }
         - { in: query, name: per_page, schema: { type: integer, default: 20, maximum: 100 } }
       responses:
@@ -548,20 +748,23 @@ paths:
                   meta: { $ref: '#/components/schemas/PageMeta' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  # ------------------------------------------------------------- Dashboard
   /dashboard/summary:
     get:
       tags: [Dashboard]
-      summary: Indicadores (abiertas, resueltas, vencidas, tiempos de atención)
+      summary: Indicadores de atención (pantalla Dashboard, admin y agente)
       description: |
-        Admin y agente ven datos globales; el solicitante solo los de sus incidencias.
-        - `open` = open + in_progress + on_hold
-        - `resolved` = resolved + closed
+        - `open` = open + assigned + in_progress (activas)
+        - `resolved` = resolved + closed creadas en el periodo
         - `overdue` = activas con `due_at` < ahora
-        - tiempos en horas: respuesta = `first_response_at - created_at`, resolución = `resolved_at - created_at`
+        - Tiempo de atención = `resolved_at - created_at`, en minutos
+        - `resolved_change_pct` compara con el periodo anterior de igual duración ("+18% vs. periodo anterior")
+        - La tabla "Vencidas que requieren atención" usa `GET /incidents?overdue=true&sort=due_at&per_page=5`
       x-status: planned
       parameters:
-        - { in: query, name: from, schema: { type: string, format: date } }
-        - { in: query, name: to, schema: { type: string, format: date } }
+        - in: query
+          name: period
+          schema: { type: string, enum: ['7d', '30d', '90d'], default: '30d' }
       responses:
         '200':
           description: OK
@@ -573,26 +776,39 @@ paths:
                   data:
                     type: object
                     properties:
+                      period:
+                        type: object
+                        properties:
+                          from: { type: string }
+                          to: { type: string }
                       totals:
                         type: object
                         properties:
-                          total: { type: integer }
+                          total: { type: integer, description: '"211 incidencias en el periodo"' }
                           open: { type: integer }
+                          unassigned: { type: integer, description: '"12 sin asignar"' }
                           resolved: { type: integer }
+                          resolved_change_pct: { type: number, nullable: true, example: 18 }
                           overdue: { type: integer }
-                          cancelled: { type: integer }
-                      avg_response_hours: { type: number, nullable: true }
-                      avg_resolution_hours: { type: number, nullable: true }
-                      sla_compliance_pct: { type: number, nullable: true }
+                      avg_resolution_minutes: { type: integer, nullable: true, example: 380 }
                       by_status:
                         type: array
-                        items: { type: object, properties: { status: { type: string }, count: { type: integer } } }
+                        items:
+                          type: object
+                          properties:
+                            status: { $ref: '#/components/schemas/IncidentStatus' }
+                            count: { type: integer }
                       by_priority:
                         type: array
-                        items: { type: object, properties: { priority: { type: string }, count: { type: integer } } }
-                      by_category:
-                        type: array
-                        items: { type: object, properties: { category: { type: string }, count: { type: integer } } }
+                        description: '"Tiempo medio de atención por prioridad, comparado con el SLA"'
+                        items:
+                          type: object
+                          properties:
+                            priority: { $ref: '#/components/schemas/Priority' }
+                            count: { type: integer }
+                            avg_resolution_minutes: { type: integer, nullable: true }
+                            sla_hours: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
 components:
   securitySchemes:
@@ -617,12 +833,27 @@ components:
       enum: [low, medium, high, critical]
     IncidentStatus:
       type: string
-      enum: [open, in_progress, on_hold, resolved, closed, cancelled]
+      enum: [open, assigned, in_progress, resolved, closed, cancelled]
+    AuditAction:
+      type: string
+      description: 'created=Creación · updated=Edición · assigned=Asignación · status_changed=Cambio de estado · commented=Comentario · login/logout/login_failed'
+      enum: [created, updated, assigned, status_changed, commented, login, logout, login_failed]
     Option:
       type: object
       properties:
         value: { type: string }
         label: { type: string }
+    Action:
+      type: object
+      properties:
+        to: { $ref: '#/components/schemas/IncidentStatus' }
+        label: { type: string, example: Iniciar atención }
+    SlaPolicy:
+      type: object
+      properties:
+        priority: { $ref: '#/components/schemas/Priority' }
+        response_hours: { type: integer, example: 1 }
+        resolution_hours: { type: integer, example: 2, description: Tiempo objetivo; define due_at }
     AuthUser:
       type: object
       properties:
@@ -636,6 +867,8 @@ components:
         - $ref: '#/components/schemas/AuthUser'
         - type: object
           properties:
+            code: { type: string, example: USR-014 }
+            area: { type: string, nullable: true, example: Soporte }
             is_active: { type: boolean }
             last_login_at: { type: string, nullable: true }
             created_at: { type: string }
@@ -649,15 +882,22 @@ components:
       type: object
       properties:
         id: { type: integer }
-        name: { type: string }
+        name: { type: string, example: Infraestructura }
         description: { type: string, nullable: true }
-    Incident:
+        area: { type: string, nullable: true, example: Infraestructura }
+    CategoryAdmin:
+      allOf:
+        - $ref: '#/components/schemas/Category'
+        - type: object
+          properties:
+            is_active: { type: boolean }
+            active_incidents: { type: integer, description: 'Columna "Activas"' }
+    IncidentListItem:
       type: object
       properties:
         id: { type: integer }
-        code: { type: string, example: INC-000042 }
+        code: { type: string, example: INC-0128 }
         title: { type: string }
-        description: { type: string }
         category: { $ref: '#/components/schemas/Category' }
         priority: { $ref: '#/components/schemas/Priority' }
         priority_label: { type: string }
@@ -667,25 +907,48 @@ components:
         assignee: { $ref: '#/components/schemas/UserRef' }
         due_at: { type: string, nullable: true }
         is_overdue: { type: boolean }
-        first_response_at: { type: string, nullable: true }
-        resolved_at: { type: string, nullable: true }
-        closed_at: { type: string, nullable: true }
         created_at: { type: string }
         updated_at: { type: string }
+        actions:
+          type: array
+          description: Transiciones que ESTE usuario puede ejecutar ahora (botón "Acción" de cada fila)
+          items: { $ref: '#/components/schemas/Action' }
+    Incident:
+      allOf:
+        - $ref: '#/components/schemas/IncidentListItem'
+        - type: object
+          properties:
+            description: { type: string }
+            sla_hours: { type: integer, description: '"SLA 2 h (Crítica)"' }
+            assigned_at: { type: string, nullable: true }
+            first_response_at: { type: string, nullable: true }
+            resolved_at: { type: string, nullable: true }
+            closed_at: { type: string, nullable: true }
+            comments_count: { type: integer }
+            can_edit: { type: boolean }
+            can_reassign: { type: boolean, description: 'Muestra el botón "Reasignar"' }
     Comment:
       type: object
       properties:
         id: { type: integer }
         body: { type: string }
-        author: { $ref: '#/components/schemas/UserRef' }
+        author:
+          type: object
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            role: { $ref: '#/components/schemas/Role' }
+            role_label: { type: string }
         created_at: { type: string }
     AuditEntry:
       type: object
       properties:
         id: { type: integer }
-        entity_type: { type: string }
+        entity_type: { type: string, enum: [incident, user, category, sla, auth] }
         entity_id: { type: integer, nullable: true }
-        action: { type: string, example: status_changed }
+        entity_code: { type: string, nullable: true, example: INC-0128, description: 'Columna "Registro"' }
+        action: { $ref: '#/components/schemas/AuditAction' }
+        action_label: { type: string, example: Cambio de estado }
         changes:
           type: object
           nullable: true
@@ -694,7 +957,7 @@ components:
             properties:
               old: {}
               new: {}
-          example: { status: { old: open, new: in_progress } }
+          example: { status: { old: assigned, new: in_progress } }
         user: { $ref: '#/components/schemas/UserRef' }
         created_at: { type: string }
     PageMeta:
@@ -746,4 +1009,4 @@ components:
               message: Los datos enviados no son válidos.
               details:
                 fields:
-                  email: Debe ser un correo electrónico válido.
+                  title: El título debe tener al menos 10 caracteres.

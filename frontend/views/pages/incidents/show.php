@@ -1,7 +1,7 @@
 <?php
 /**
  * @var array $incident
- * @var list<string> $transitions  Estados destino válidos según la API
+ * @var list<array{to:string,label:string}> $transitions  Acciones válidas según la API (GET /catalogs)
  * @var bool $canManage
  */
 $i = $incident;
@@ -24,9 +24,9 @@ $i = $incident;
             <?php if ($transitions === []): ?>
                 <span class="text-faint-k small align-self-center">La API no define transiciones para el estado actual.</span>
             <?php endif; ?>
-            <?php foreach ($transitions as $to): ?>
-                <button type="button" class="btn <?= $to === 'resolved' ? 'btn-primary' : 'btn-outline-k' ?>" disabled title="Disponible cuando exista PATCH /api/incidents/{id}/status (día 2)">
-                    Pasar a <?= e(status_meta($to)[0]) ?>
+            <?php foreach ($transitions as $t): ?>
+                <button type="button" class="btn <?= $t['to'] === 'resolved' ? 'btn-primary' : 'btn-outline-k' ?>" disabled title="Disponible cuando exista PATCH /api/incidents/{id}/status (día 2)">
+                    <?= e($t['label']) ?>
                 </button>
             <?php endforeach; ?>
         </div>

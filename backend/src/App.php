@@ -73,6 +73,7 @@ final class App
         // Por rol
         $r->get('/api/users/agents', [$users, 'agents'], roles: [Role::Admin, Role::Agent]);
         $r->get('/api/users', [$users, 'index'], roles: [Role::Admin]);
+        $r->get('/api/categories', [$catalogs, 'categories'], roles: [Role::Admin]);
         $r->post('/api/users', [$users, 'store'], roles: [Role::Admin]);
 
         // Día 2–3: /api/incidents, /api/dashboard, /api/audit (ver docs/openapi.yaml)

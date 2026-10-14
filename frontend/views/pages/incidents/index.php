@@ -14,7 +14,7 @@
 <form class="filters" method="get" action="<?= e(url('/incidencias')) ?>" aria-label="Filtros">
     <select class="form-select" name="estado" aria-label="Filtrar por estado">
         <option value="">Estado: todos</option>
-        <?php foreach (['open', 'assigned', 'in_progress', 'on_hold', 'resolved', 'closed', 'cancelled'] as $s): ?>
+        <?php foreach (['open', 'assigned', 'in_progress', 'resolved', 'closed', 'cancelled'] as $s): ?>
             <option value="<?= e($s) ?>"<?= $filters['status'] === $s ? ' selected' : '' ?>><?= e(status_meta($s)[0]) ?></option>
         <?php endforeach; ?>
     </select>
